@@ -14,8 +14,8 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "outputs"
 REALTIME_DIR = OUTPUT_DIR / "realtime"
-DEFAULT_VIDEO = Path(r"C:\Users\HP\Downloads\video.mp4")
-DEFAULT_IMAGE = Path(r"C:\Users\HP\Downloads\img car.jpg")
+DEFAULT_VIDEO = BASE_DIR / "samples" / "video.mp4"
+DEFAULT_IMAGE = BASE_DIR / "samples" / "img_car.jpg"
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".mp4", ".avi", ".mov", ".mkv"}
 INDIAN_STATE_CODES = {
     "AP", "AR", "AS", "BR", "CG", "CH", "DD", "DL", "GA", "GJ", "HR", "HP",

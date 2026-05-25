@@ -17,8 +17,13 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe web_app.py
 ```
 
-Open `http://127.0.0.1:5050`, upload an image/video or use `C:\Users\HP\Downloads\video.mp4`, then run detection.
+Open `http://127.0.0.1:5050`, upload an image/video or use the bundled sample files, then run detection.
 Each run stores one final annotated frame, one final number plate crop, and recognized plate text in `outputs/`.
+
+Bundled sample media:
+
+- `samples/img_car.jpg`
+- `samples/video.mp4`
 
 ### Command Line
 
