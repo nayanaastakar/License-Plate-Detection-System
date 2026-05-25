@@ -1,5 +1,3 @@
-import csv
-import json
 import shutil
 import uuid
 from pathlib import Path
@@ -38,22 +36,29 @@ def relative_url(path):
     return f"/outputs/{path.relative_to(OUTPUT_DIR).as_posix()}"
 
 
-def write_reports(run_dir, detections):
-    csv_path = run_dir / "detections.csv"
-    json_path = run_dir / "detections.json"
+def write_plate_text(run_dir, plate_text):
+    text_path = run_dir / "plate_text.txt"
+    text_path.write_text(plate_text or "Text not recognized", encoding="utf-8")
+    return text_path
 
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["index", "frame", "plate_text", "x", "y", "width", "height", "crop_file", "annotated_frame"],
-        )
-        writer.writeheader()
-        writer.writerows(detections)
 
-    with json_path.open("w", encoding="utf-8") as f:
-        json.dump(detections, f, indent=2)
+def is_plate_candidate(plate, frame_shape):
+    x, y, w, h = [int(v) for v in plate]
+    frame_height, frame_width = frame_shape[:2]
+    if not frame_width or not frame_height or not h:
+        return False
 
-    return csv_path, json_path
+    aspect_ratio = w / h
+    area_ratio = (w * h) / (frame_width * frame_height)
+    width_ratio = w / frame_width
+    height_ratio = h / frame_height
+
+    return (
+        2.0 <= aspect_ratio <= 6.2
+        and 0.0005 <= area_ratio <= 0.055
+        and 0.04 <= width_ratio <= 0.48
+        and 0.018 <= height_ratio <= 0.16
+    )
 
 
 def plate_score(plate, frame_shape):
@@ -162,6 +167,34 @@ def read_plate_text(plate_image):
     return "".join(characters)
 
 
+def detection_from_candidate(frame, annotated, plate, frame_no, run_dir, frames_dir, crops_dir):
+    x, y, w, h = [int(v) for v in plate]
+    plate_image = frame[y:y + h, x:x + w]
+    plate_text = read_plate_text(plate_image)
+    if not plate_text:
+        return None
+
+    annotated_path = frames_dir / f"final_frame_{frame_no:04d}.jpg"
+    crop_path = save_plate(frame, plate, crops_dir, 0)
+    final_crop = run_dir / "final_number_plate.jpg"
+    text_path = write_plate_text(run_dir, plate_text)
+    shutil.copy2(crop_path, final_crop)
+    cv2.imwrite(str(annotated_path), annotated)
+
+    return {
+        "index": 0,
+        "frame": int(frame_no),
+        "plate_text": plate_text,
+        "x": x,
+        "y": y,
+        "width": w,
+        "height": h,
+        "crop_file": relative_url(final_crop),
+        "annotated_frame": relative_url(annotated_path),
+        "text_file": relative_url(text_path),
+    }
+
+
 def process_image(input_path, run_dir, min_area):
     cascade = load_cascade(DEFAULT_CASCADE)
     image = cv2.imread(str(input_path))
@@ -179,28 +212,14 @@ def process_image(input_path, run_dir, min_area):
     annotated_path = frames_dir / "image_result.jpg"
     cv2.imwrite(str(annotated_path), annotated)
 
-    best_plate = max(plates, key=lambda plate: plate_score(plate, image.shape)) if plates else None
-    if best_plate is not None:
-        x, y, w, h = [int(v) for v in best_plate]
-        plate_image = image[y:y + h, x:x + w]
-        plate_text = read_plate_text(plate_image)
-        crop_path = save_plate(image, best_plate, crops_dir, 0)
-        final_crop = run_dir / "final_number_plate.jpg"
-        shutil.copy2(crop_path, final_crop)
-        detections.append({
-            "index": 0,
-            "frame": 1,
-            "plate_text": plate_text,
-            "x": x,
-            "y": y,
-            "width": w,
-            "height": h,
-            "crop_file": relative_url(final_crop),
-            "annotated_frame": relative_url(annotated_path),
-        })
+    candidates = [plate for plate in plates if is_plate_candidate(plate, image.shape)]
+    for plate in sorted(candidates, key=lambda p: plate_score(p, image.shape), reverse=True):
+        detection = detection_from_candidate(image, annotated, plate, 1, run_dir, frames_dir, crops_dir)
+        if detection:
+            detections.append(detection)
+            break
 
-    csv_path, json_path = write_reports(run_dir, detections)
-    return detections, csv_path, json_path
+    return detections
 
 
 def process_video(input_path, run_dir, min_area, frame_step=5):
@@ -228,6 +247,8 @@ def process_video(input_path, run_dir, min_area, frame_step=5):
         annotated = frame.copy()
         plates = detect_plates(annotated, cascade, min_area)
         for plate in plates:
+            if not is_plate_candidate(plate, frame.shape):
+                continue
             score = plate_score(plate, frame.shape)
             if best is None or score > best["score"]:
                 best = {
@@ -242,29 +263,19 @@ def process_video(input_path, run_dir, min_area, frame_step=5):
 
     detections = []
     if best is not None:
-        annotated_path = frames_dir / f"final_frame_{best['frame_no']:04d}.jpg"
-        x, y, w, h = [int(v) for v in best["plate"]]
-        plate_image = best["frame"][y:y + h, x:x + w]
-        plate_text = read_plate_text(plate_image)
-        crop_path = save_plate(best["frame"], best["plate"], crops_dir, 0)
-        final_crop = run_dir / "final_number_plate.jpg"
-        shutil.copy2(crop_path, final_crop)
-        cv2.imwrite(str(annotated_path), best["annotated"])
+        detection = detection_from_candidate(
+            best["frame"],
+            best["annotated"],
+            best["plate"],
+            best["frame_no"],
+            run_dir,
+            frames_dir,
+            crops_dir,
+        )
+        if detection:
+            detections.append(detection)
 
-        detections.append({
-            "index": 0,
-            "frame": int(best["frame_no"]),
-            "plate_text": plate_text,
-            "x": x,
-            "y": y,
-            "width": w,
-            "height": h,
-            "crop_file": relative_url(final_crop),
-            "annotated_frame": relative_url(annotated_path),
-        })
-
-    csv_path, json_path = write_reports(run_dir, detections)
-    return detections, csv_path, json_path
+    return detections
 
 
 @app.route("/")
@@ -296,9 +307,9 @@ def process_upload():
 
         suffix = input_path.suffix.lower()
         if suffix in {".jpg", ".jpeg", ".png", ".bmp"}:
-            detections, csv_path, json_path = process_image(input_path, run_dir, min_area)
+            detections = process_image(input_path, run_dir, min_area)
         else:
-            detections, csv_path, json_path = process_video(input_path, run_dir, min_area)
+            detections = process_video(input_path, run_dir, min_area)
 
         return jsonify({
             "status": "success",
@@ -306,8 +317,7 @@ def process_upload():
             "input_name": input_path.name,
             "detections": detections,
             "count": len(detections),
-            "csv_url": relative_url(csv_path),
-            "json_url": relative_url(json_path),
+            "text_url": detections[0]["text_file"] if detections else "",
             "output_folder": str(run_dir),
         })
     except Exception as exc:

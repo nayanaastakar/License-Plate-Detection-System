@@ -4,8 +4,7 @@ const results = document.getElementById('results');
 const cards = document.getElementById('cards');
 const title = document.getElementById('result-title');
 const outputFolder = document.getElementById('output-folder');
-const csvLink = document.getElementById('csv-link');
-const jsonLink = document.getElementById('json-link');
+const textLink = document.getElementById('text-link');
 
 function setStatus(message, state = 'ready') {
     statusEl.textContent = message;
@@ -16,8 +15,8 @@ function renderResults(data) {
     results.hidden = false;
     title.textContent = data.count ? 'Final number plate image' : 'No number plate detected';
     outputFolder.textContent = data.output_folder;
-    csvLink.href = data.csv_url;
-    jsonLink.href = data.json_url;
+    textLink.href = data.text_url || '#';
+    textLink.hidden = !data.text_url;
     cards.innerHTML = '';
 
     if (!data.detections.length) {
