@@ -190,6 +190,10 @@ input[type="number"] {
     background: #fff;
 }
 
+.card-final {
+    max-width: 560px;
+}
+
 .card img {
     display: block;
     width: 100%;

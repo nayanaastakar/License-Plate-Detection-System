@@ -14,34 +14,33 @@ function setStatus(message, state = 'ready') {
 
 function renderResults(data) {
     results.hidden = false;
-    title.textContent = `${data.count} detection${data.count === 1 ? '' : 's'} found`;
+    title.textContent = data.count ? 'Final number plate image' : 'No number plate detected';
     outputFolder.textContent = data.output_folder;
     csvLink.href = data.csv_url;
     jsonLink.href = data.json_url;
     cards.innerHTML = '';
 
     if (!data.detections.length) {
-        cards.innerHTML = '<p>No plate regions were detected. Try a clearer or closer vehicle video.</p>';
+        cards.innerHTML = '<p>No plate region was detected. Try a clearer or closer vehicle video.</p>';
         return;
     }
 
-    data.detections.forEach((item) => {
-        const card = document.createElement('article');
-        card.className = 'card';
-        card.innerHTML = `
+    const item = data.detections[0];
+    const card = document.createElement('article');
+    card.className = 'card card-final';
+    card.innerHTML = `
             <a href="${item.annotated_frame}" target="_blank">
                 <img src="${item.annotated_frame}" alt="Annotated frame ${item.frame}">
             </a>
             <div class="card-body">
-                <strong>Frame ${item.frame}</strong>
+                <strong>Final plate from frame ${item.frame}</strong>
                 <p>Box: ${item.x}, ${item.y}, ${item.width} x ${item.height}</p>
                 <a href="${item.crop_file}" target="_blank">
-                    <img class="crop" src="${item.crop_file}" alt="Plate crop ${item.index}">
+                    <img class="crop" src="${item.crop_file}" alt="Final number plate">
                 </a>
             </div>
         `;
-        cards.appendChild(card);
-    });
+    cards.appendChild(card);
 }
 
 form.addEventListener('submit', async (event) => {
