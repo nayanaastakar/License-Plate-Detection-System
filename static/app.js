@@ -78,6 +78,10 @@ function stopCameraStream() {
     stopCamera.disabled = true;
 }
 
+async function resetCameraDetection() {
+    await fetch('/api/camera/reset', { method: 'POST' });
+}
+
 async function refreshCameraDetection() {
     const response = await fetch('/api/camera/latest');
     const data = await response.json();
@@ -132,7 +136,9 @@ modeTabs.forEach((tab) => {
     tab.addEventListener('click', () => switchMode(tab.dataset.mode));
 });
 
-startCamera.addEventListener('click', () => {
+startCamera.addEventListener('click', async () => {
+    await resetCameraDetection();
+    results.hidden = true;
     const params = new URLSearchParams({
         camera: cameraIndex.value || '0',
         min_area: minArea.value || '120',
@@ -145,8 +151,14 @@ startCamera.addEventListener('click', () => {
     cameraPoll = setInterval(refreshCameraDetection, 2000);
 });
 
-stopCamera.addEventListener('click', () => {
+cameraStream.addEventListener('error', () => {
     stopCameraStream();
+    setStatus('Camera stream failed. Try camera index 0 or close other camera apps.', 'error');
+});
+
+stopCamera.addEventListener('click', async () => {
+    stopCameraStream();
+    await resetCameraDetection();
     setStatus('Camera stopped');
 });
 

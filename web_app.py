@@ -1,4 +1,5 @@
 import shutil
+import threading
 import uuid
 from pathlib import Path
 
@@ -23,12 +24,36 @@ INDIAN_STATE_CODES = {
 }
 OCR_CONFUSION_COSTS = {
     ("X", "M"): 0.35,
+    ("X", "N"): 0.35,
     ("B", "H"): 0.35,
     ("8", "B"): 0.35,
     ("0", "O"): 0.35,
     ("1", "I"): 0.35,
+    ("1", "T"): 0.45,
+    ("I", "T"): 0.35,
     ("5", "S"): 0.35,
     ("2", "Z"): 0.35,
+}
+LETTER_TO_DIGIT = {
+    "O": "0",
+    "Q": "0",
+    "D": "0",
+    "I": "1",
+    "L": "1",
+    "T": "1",
+    "Z": "2",
+    "S": "5",
+    "G": "6",
+    "B": "8",
+}
+DIGIT_TO_LETTER = {
+    "0": "O",
+    "1": "I",
+    "2": "Z",
+    "4": "A",
+    "5": "S",
+    "6": "G",
+    "8": "B",
 }
 
 app = Flask(__name__)
@@ -44,6 +69,7 @@ OCR_FONTS = [
 ]
 OCR_TEMPLATES = None
 LATEST_CAMERA_DETECTION = {}
+CAMERA_LOCK = threading.Lock()
 
 
 def is_allowed_file(filename):
@@ -87,6 +113,15 @@ def candidate_key(plate):
 def draw_plate_marker(frame, plate):
     x, y, w, h = [int(v) for v in plate]
     cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+
+def camera_message_frame(message):
+    frame = np.full((360, 640, 3), 245, dtype=np.uint8)
+    cv2.putText(frame, message, (42, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 0, 180), 2)
+    ok, encoded = cv2.imencode(".jpg", frame)
+    if ok:
+        return b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + encoded.tobytes() + b"\r\n"
+    return b""
 
 
 def contour_plate_candidates(frame, min_area):
@@ -189,12 +224,26 @@ def build_ocr_templates():
     return templates
 
 
-def allowed_chars_for_position(index, length):
+def expected_kind_for_position(index, length):
     if length >= 9:
         if index in (0, 1, 4, 5):
-            return "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            return "letter"
         if index in (2, 3) or index >= 6:
-            return "0123456789"
+            return "digit"
+    if length in (7, 8):
+        if index in (0, 1, 4):
+            return "letter"
+        if index in (2, 3) or index >= 5:
+            return "digit"
+    return "any"
+
+
+def allowed_chars_for_position(index, length):
+    kind = expected_kind_for_position(index, length)
+    if kind == "letter":
+        return "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    if kind == "digit":
+        return "0123456789"
     return OCR_CHARS
 
 
@@ -217,6 +266,20 @@ def classify_character(character_image, index, length):
     return best_char
 
 
+def count_character_holes(character_image):
+    contours, hierarchy = cv2.findContours(character_image, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if hierarchy is None:
+        return 0
+    return sum(1 for item in hierarchy[0] if item[3] != -1)
+
+
+def correct_digit_by_shape(character_image, char):
+    holes = count_character_holes(character_image)
+    if char in {"0", "6", "9"} and holes >= 2:
+        return "8"
+    return char
+
+
 def confusion_cost(source, target):
     if source == target:
         return 0.0
@@ -226,6 +289,17 @@ def confusion_cost(source, target):
 def correct_indian_plate_text(text):
     if len(text) < 4:
         return text
+
+    normalized = []
+    for index, char in enumerate(text):
+        kind = expected_kind_for_position(index, len(text))
+        if kind == "letter":
+            normalized.append(DIGIT_TO_LETTER.get(char, char))
+        elif kind == "digit":
+            normalized.append(LETTER_TO_DIGIT.get(char, char))
+        else:
+            normalized.append(char)
+    text = "".join(normalized)
 
     prefix = text[:2]
     if prefix in INDIAN_STATE_CODES:
@@ -244,6 +318,57 @@ def correct_indian_plate_text(text):
     return text
 
 
+def plate_text_quality(text):
+    if not text:
+        return 0
+
+    has_letter = any(char.isalpha() for char in text)
+    has_digit = any(char.isdigit() for char in text)
+    if not has_letter or not has_digit:
+        return 0
+
+    quality = len(text)
+    if len(text) >= 8:
+        quality += 4
+    if len(text) >= 9 and text[:2] in INDIAN_STATE_CODES:
+        quality += 8
+    elif len(text) >= 8 and text[:2] in INDIAN_STATE_CODES:
+        quality += 4
+    return quality
+
+
+def is_reliable_plate_text(text):
+    return plate_text_quality(text) >= 12
+
+
+def character_boxes(binary, image_shape):
+    _, _, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+    boxes = []
+    for x, y, width, height, area in stats[1:]:
+        if area < 100 or height < 30 or width < 8:
+            continue
+        if height > image_shape[0] * 0.9 or width > image_shape[1] * 0.9:
+            continue
+        if y < image_shape[0] * 0.12 or y > image_shape[0] * 0.86:
+            continue
+        boxes.append((int(x), int(y), int(width), int(height), int(area)))
+
+    if not boxes:
+        return []
+
+    heights = np.array([box[3] for box in boxes], dtype=np.float32)
+    widths = np.array([box[2] for box in boxes], dtype=np.float32)
+    median_height = float(np.median(heights))
+    median_width = float(np.median(widths))
+    filtered = [
+        box
+        for box in boxes
+        if box[3] >= median_height * 0.48 and box[2] >= max(8.0, median_width * 0.28)
+    ]
+
+    return sorted(filtered, key=lambda box: box[0])
+
+
 def read_plate_text(plate_image):
     if plate_image is None or plate_image.size == 0:
         return ""
@@ -253,25 +378,17 @@ def read_plate_text(plate_image):
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
     binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
 
-    _, _, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
-    boxes = []
-    for x, y, width, height, area in stats[1:]:
-        if area < 100 or height < 30 or width < 8:
-            continue
-        if height > upscaled.shape[0] * 0.9 or width > upscaled.shape[1] * 0.9:
-            continue
-        if y < upscaled.shape[0] * 0.2 or y > upscaled.shape[0] * 0.78:
-            continue
-        boxes.append((int(x), int(y), int(width), int(height)))
-
-    boxes = sorted(boxes, key=lambda box: box[0])
+    boxes = character_boxes(binary, upscaled.shape)
     if not 6 <= len(boxes) <= 12:
         return ""
 
     characters = []
-    for index, (x, y, width, height) in enumerate(boxes):
+    for index, (x, y, width, height, _) in enumerate(boxes):
         character_image = binary[y:y + height, x:x + width]
-        characters.append(classify_character(character_image, index, len(boxes)))
+        character = classify_character(character_image, index, len(boxes))
+        if expected_kind_for_position(index, len(boxes)) == "digit":
+            character = correct_digit_by_shape(character_image, character)
+        characters.append(character)
     return correct_indian_plate_text("".join(characters))
 
 
@@ -304,6 +421,41 @@ def detection_from_candidate(frame, annotated, plate, frame_no, run_dir, frames_
     }
 
 
+def build_detection(frame, annotated, plate, frame_no, plate_text, run_dir, frames_dir, crops_dir):
+    x, y, w, h = [int(v) for v in plate]
+    draw_plate_marker(annotated, plate)
+    cv2.putText(
+        annotated,
+        plate_text,
+        (x, min(frame.shape[0] - 10, y + h + 24)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.75,
+        (15, 118, 110),
+        2,
+        cv2.LINE_AA,
+    )
+
+    annotated_path = frames_dir / f"final_frame_{frame_no:04d}.jpg"
+    crop_path = save_plate(frame, plate, crops_dir, 0)
+    final_crop = run_dir / "final_number_plate.jpg"
+    text_path = write_plate_text(run_dir, plate_text)
+    shutil.copy2(crop_path, final_crop)
+    cv2.imwrite(str(annotated_path), annotated)
+
+    return {
+        "index": 0,
+        "frame": int(frame_no),
+        "plate_text": plate_text,
+        "x": x,
+        "y": y,
+        "width": w,
+        "height": h,
+        "crop_file": relative_url(final_crop),
+        "annotated_frame": relative_url(annotated_path),
+        "text_file": relative_url(text_path),
+    }
+
+
 def detect_readable_plate(frame, cascade, min_area):
     annotated = frame.copy()
     candidates = [
@@ -312,12 +464,20 @@ def detect_readable_plate(frame, cascade, min_area):
         if is_plate_candidate(plate, frame.shape)
     ]
 
-    for plate in sorted(candidates, key=lambda p: plate_score(p, frame.shape), reverse=True):
+    best_detection = None
+    for plate in sorted(candidates, key=lambda p: plate_score(p, frame.shape), reverse=True)[:4]:
         x, y, w, h = [int(v) for v in plate]
         plate_image = frame[y:y + h, x:x + w]
         plate_text = read_plate_text(plate_image)
-        if plate_text:
-            return plate, plate_text
+        quality = plate_text_quality(plate_text)
+        if quality <= 0:
+            continue
+        score = plate_score(plate, frame.shape) + (quality * 2500)
+        if best_detection is None or score > best_detection["score"]:
+            best_detection = {"score": score, "plate": plate, "plate_text": plate_text}
+
+    if best_detection and is_reliable_plate_text(best_detection["plate_text"]):
+        return best_detection["plate"], best_detection["plate_text"]
     return None, ""
 
 
@@ -362,21 +522,33 @@ def save_realtime_detection(frame, plate, plate_text):
 
 
 def camera_frame_generator(camera_index, min_area):
-    cascade = load_cascade(DEFAULT_CASCADE)
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(camera_index)
-    if not cap.isOpened():
-        frame = np.full((360, 640, 3), 245, dtype=np.uint8)
-        cv2.putText(frame, "Camera not available", (90, 180), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 180), 2)
-        ok, encoded = cv2.imencode(".jpg", frame)
-        if ok:
-            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + encoded.tobytes() + b"\r\n"
+    if not CAMERA_LOCK.acquire(blocking=False):
+        frame = camera_message_frame("Camera already running")
+        if frame:
+            yield frame
         return
 
-    last_saved_text = ""
-    frame_no = 0
+    LATEST_CAMERA_DETECTION.clear()
+    cap = None
+
     try:
+        cascade = load_cascade(DEFAULT_CASCADE)
+        cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap.release()
+            cap = cv2.VideoCapture(camera_index)
+        if not cap.isOpened():
+            frame = camera_message_frame("Camera not available")
+            if frame:
+                yield frame
+            return
+
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        last_saved_text = ""
+        frame_no = 0
         while True:
             ok, frame = cap.read()
             if not ok:
@@ -384,7 +556,7 @@ def camera_frame_generator(camera_index, min_area):
 
             frame_no += 1
             annotated = frame.copy()
-            if frame_no % 3 == 0:
+            if frame_no % 10 == 0:
                 plate, plate_text = detect_readable_plate(frame, cascade, min_area)
                 if plate is not None:
                     draw_plate_marker(annotated, plate)
@@ -402,13 +574,30 @@ def camera_frame_generator(camera_index, min_area):
                     if plate_text != last_saved_text:
                         save_realtime_detection(frame, plate, plate_text)
                         last_saved_text = plate_text
+                else:
+                    candidates = [
+                        plate
+                        for plate in collect_plate_candidates(frame, annotated, cascade, min_area)
+                        if is_plate_candidate(plate, frame.shape)
+                    ]
+                    if candidates:
+                        draw_plate_marker(
+                            annotated,
+                            max(candidates, key=lambda p: plate_score(p, frame.shape)),
+                        )
 
             ok, encoded = cv2.imencode(".jpg", annotated)
             if not ok:
                 continue
             yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + encoded.tobytes() + b"\r\n"
+    except Exception:
+        frame = camera_message_frame("Camera stream error")
+        if frame:
+            yield frame
     finally:
-        cap.release()
+        if cap is not None:
+            cap.release()
+        CAMERA_LOCK.release()
 
 
 def process_image(input_path, run_dir, min_area):
@@ -438,7 +627,7 @@ def process_image(input_path, run_dir, min_area):
     return detections
 
 
-def process_video(input_path, run_dir, min_area, frame_step=5):
+def process_video(input_path, run_dir, min_area, frame_step=10):
     cascade = load_cascade(DEFAULT_CASCADE)
     cap = cv2.VideoCapture(str(input_path))
     if not cap.isOpened():
@@ -449,7 +638,8 @@ def process_video(input_path, run_dir, min_area, frame_step=5):
     frames_dir.mkdir(parents=True, exist_ok=True)
     crops_dir.mkdir(parents=True, exist_ok=True)
 
-    best = None
+    best_readable = None
+    best_visual = None
     frame_no = 0
 
     while True:
@@ -461,29 +651,59 @@ def process_video(input_path, run_dir, min_area, frame_step=5):
             continue
 
         annotated = frame.copy()
-        plates = collect_plate_candidates(frame, annotated, cascade, min_area)
-        for plate in plates:
-            if not is_plate_candidate(plate, frame.shape):
-                continue
+        candidates = [
+            plate
+            for plate in collect_plate_candidates(frame, annotated, cascade, min_area)
+            if is_plate_candidate(plate, frame.shape)
+        ]
+        for plate in sorted(candidates, key=lambda p: plate_score(p, frame.shape), reverse=True)[:4]:
             score = plate_score(plate, frame.shape)
-            if best is None or score > best["score"]:
-                best = {
+            if best_visual is None or score > best_visual["score"]:
+                best_visual = {
                     "score": score,
                     "frame": frame.copy(),
                     "annotated": annotated.copy(),
                     "plate": plate,
                     "frame_no": frame_no,
                 }
+            x, y, w, h = [int(v) for v in plate]
+            plate_text = read_plate_text(frame[y:y + h, x:x + w])
+            quality = plate_text_quality(plate_text)
+            if quality <= 0:
+                continue
+            readable_score = score + (quality * 2500)
+            if best_readable is None or readable_score > best_readable["score"]:
+                best_readable = {
+                    "score": readable_score,
+                    "frame": frame.copy(),
+                    "annotated": annotated.copy(),
+                    "plate": plate,
+                    "plate_text": plate_text,
+                    "frame_no": frame_no,
+                }
 
     cap.release()
 
     detections = []
-    if best is not None:
+    if best_readable is not None:
+        detection = build_detection(
+            best_readable["frame"],
+            best_readable["annotated"],
+            best_readable["plate"],
+            best_readable["frame_no"],
+            best_readable["plate_text"],
+            run_dir,
+            frames_dir,
+            crops_dir,
+        )
+        if detection:
+            detections.append(detection)
+    elif best_visual is not None:
         detection = detection_from_candidate(
-            best["frame"],
-            best["annotated"],
-            best["plate"],
-            best["frame_no"],
+            best_visual["frame"],
+            best_visual["annotated"],
+            best_visual["plate"],
+            best_visual["frame_no"],
             run_dir,
             frames_dir,
             crops_dir,
@@ -567,10 +787,16 @@ def latest_camera_detection():
     })
 
 
+@app.route("/api/camera/reset", methods=["POST"])
+def reset_camera_detection():
+    LATEST_CAMERA_DETECTION.clear()
+    return jsonify({"status": "success"})
+
+
 @app.route("/outputs/<path:filename>")
 def outputs(filename):
     return send_from_directory(OUTPUT_DIR, filename)
 
 
 if __name__ == "__main__":
-    app.run(debug=False, host="127.0.0.1", port=5050, use_reloader=False)
+    app.run(debug=False, host="127.0.0.1", port=5050, use_reloader=False, threaded=True)
