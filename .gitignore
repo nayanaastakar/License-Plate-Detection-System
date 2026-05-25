@@ -3,4 +3,5 @@ __pycache__/
 .venv/
 venv/
 detected_plates/
+demo_output/
 zip_inspect/
