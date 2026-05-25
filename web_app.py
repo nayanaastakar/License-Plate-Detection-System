@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 
 import cv2
+import numpy as np
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
 from Number_plate_detection import DEFAULT_CASCADE, detect_plates, load_cascade, save_plate
@@ -19,6 +20,14 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".mp4", ".avi", ".mov", "
 app = Flask(__name__)
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
+OCR_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+OCR_FONTS = [
+    cv2.FONT_HERSHEY_SIMPLEX,
+    cv2.FONT_HERSHEY_DUPLEX,
+    cv2.FONT_HERSHEY_COMPLEX,
+    cv2.FONT_HERSHEY_TRIPLEX,
+]
+OCR_TEMPLATES = None
 
 
 def is_allowed_file(filename):
@@ -36,7 +45,7 @@ def write_reports(run_dir, detections):
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["index", "frame", "x", "y", "width", "height", "crop_file", "annotated_frame"],
+            fieldnames=["index", "frame", "plate_text", "x", "y", "width", "height", "crop_file", "annotated_frame"],
         )
         writer.writeheader()
         writer.writerows(detections)
@@ -61,6 +70,98 @@ def plate_score(plate, frame_shape):
     return area * (0.55 + 0.45 * aspect_score) * vertical_score * size_penalty
 
 
+def normalize_character(image):
+    ys, xs = np.where(image > 0)
+    if len(xs) == 0:
+        return np.zeros((48, 32), dtype=np.uint8)
+
+    x1, x2 = xs.min(), xs.max() + 1
+    y1, y2 = ys.min(), ys.max() + 1
+    crop = image[y1:y2, x1:x2]
+    height, width = crop.shape
+    size = max(height, width)
+    canvas = np.zeros((size, size), dtype=np.uint8)
+    y_offset = (size - height) // 2
+    x_offset = (size - width) // 2
+    canvas[y_offset:y_offset + height, x_offset:x_offset + width] = crop
+    return cv2.resize(canvas, (32, 48), interpolation=cv2.INTER_AREA)
+
+
+def build_ocr_templates():
+    templates = []
+    for char in OCR_CHARS:
+        for font in OCR_FONTS:
+            for scale in (1.2, 1.4, 1.6, 1.8):
+                for thickness in (2, 3, 4):
+                    canvas = np.zeros((80, 60), dtype=np.uint8)
+                    (text_width, text_height), _ = cv2.getTextSize(char, font, scale, thickness)
+                    x = (60 - text_width) // 2
+                    y = (80 + text_height) // 2
+                    cv2.putText(canvas, char, (x, y), font, scale, 255, thickness, cv2.LINE_AA)
+                    _, binary = cv2.threshold(canvas, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    templates.append((char, normalize_character(binary)))
+    return templates
+
+
+def allowed_chars_for_position(index, length):
+    if length >= 9:
+        if index in (0, 1, 4, 5):
+            return "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        if index in (2, 3) or index >= 6:
+            return "0123456789"
+    return OCR_CHARS
+
+
+def classify_character(character_image, index, length):
+    global OCR_TEMPLATES
+    if OCR_TEMPLATES is None:
+        OCR_TEMPLATES = build_ocr_templates()
+
+    normalized = normalize_character(character_image)
+    allowed = allowed_chars_for_position(index, length)
+    best_score = -1.0
+    best_char = ""
+    for char, template in OCR_TEMPLATES:
+        if char not in allowed:
+            continue
+        score = cv2.matchTemplate(normalized, template, cv2.TM_CCOEFF_NORMED)[0][0]
+        if score > best_score:
+            best_score = score
+            best_char = char
+    return best_char
+
+
+def read_plate_text(plate_image):
+    if plate_image is None or plate_image.size == 0:
+        return ""
+
+    upscaled = cv2.resize(plate_image, None, fx=6, fy=6, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.cvtColor(upscaled, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+
+    _, _, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+    boxes = []
+    for x, y, width, height, area in stats[1:]:
+        if area < 100 or height < 30 or width < 8:
+            continue
+        if height > upscaled.shape[0] * 0.9 or width > upscaled.shape[1] * 0.9:
+            continue
+        if y < upscaled.shape[0] * 0.2 or y > upscaled.shape[0] * 0.78:
+            continue
+        boxes.append((int(x), int(y), int(width), int(height)))
+
+    boxes = sorted(boxes, key=lambda box: box[0])
+    if not 6 <= len(boxes) <= 12:
+        return ""
+
+    characters = []
+    for index, (x, y, width, height) in enumerate(boxes):
+        character_image = binary[y:y + height, x:x + width]
+        characters.append(classify_character(character_image, index, len(boxes)))
+    return "".join(characters)
+
+
 def process_image(input_path, run_dir, min_area):
     cascade = load_cascade(DEFAULT_CASCADE)
     image = cv2.imread(str(input_path))
@@ -80,13 +181,16 @@ def process_image(input_path, run_dir, min_area):
 
     best_plate = max(plates, key=lambda plate: plate_score(plate, image.shape)) if plates else None
     if best_plate is not None:
+        x, y, w, h = [int(v) for v in best_plate]
+        plate_image = image[y:y + h, x:x + w]
+        plate_text = read_plate_text(plate_image)
         crop_path = save_plate(image, best_plate, crops_dir, 0)
         final_crop = run_dir / "final_number_plate.jpg"
         shutil.copy2(crop_path, final_crop)
-        x, y, w, h = [int(v) for v in best_plate]
         detections.append({
             "index": 0,
             "frame": 1,
+            "plate_text": plate_text,
             "x": x,
             "y": y,
             "width": w,
@@ -139,15 +243,18 @@ def process_video(input_path, run_dir, min_area, frame_step=5):
     detections = []
     if best is not None:
         annotated_path = frames_dir / f"final_frame_{best['frame_no']:04d}.jpg"
+        x, y, w, h = [int(v) for v in best["plate"]]
+        plate_image = best["frame"][y:y + h, x:x + w]
+        plate_text = read_plate_text(plate_image)
         crop_path = save_plate(best["frame"], best["plate"], crops_dir, 0)
         final_crop = run_dir / "final_number_plate.jpg"
         shutil.copy2(crop_path, final_crop)
         cv2.imwrite(str(annotated_path), best["annotated"])
 
-        x, y, w, h = [int(v) for v in best["plate"]]
         detections.append({
             "index": 0,
             "frame": int(best["frame_no"]),
+            "plate_text": plate_text,
             "x": x,
             "y": y,
             "width": w,

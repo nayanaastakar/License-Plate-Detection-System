@@ -34,6 +34,7 @@ function renderResults(data) {
             </a>
             <div class="card-body">
                 <strong>Final plate from frame ${item.frame}</strong>
+                <p class="plate-text">${item.plate_text || 'Text not recognized'}</p>
                 <p>Box: ${item.x}, ${item.y}, ${item.width} x ${item.height}</p>
                 <a href="${item.crop_file}" target="_blank">
                     <img class="crop" src="${item.crop_file}" alt="Final number plate">
