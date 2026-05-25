@@ -11,6 +11,17 @@ py -3 -m venv .venv
 
 ## Run
 
+### Web UI
+
+```bash
+.\.venv\Scripts\python.exe web_app.py
+```
+
+Open `http://127.0.0.1:5050`, upload an image/video or use `C:\Users\HP\Downloads\video.mp4`, then run detection.
+Each run stores annotated frames, cropped plates, `detections.csv`, and `detections.json` in `outputs/`.
+
+### Command Line
+
 Use webcam:
 
 ```bash

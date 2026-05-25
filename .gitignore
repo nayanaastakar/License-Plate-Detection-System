@@ -4,4 +4,6 @@ __pycache__/
 venv/
 detected_plates/
 demo_output/
+outputs/
+uploads/
 zip_inspect/

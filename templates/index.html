@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>License Plate Detection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <main class="shell">
+        <section class="hero">
+            <div>
+                <p class="eyebrow">OpenCV Haar Cascade</p>
+                <h1>License Plate Detection</h1>
+                <p class="summary">Upload a vehicle image or video, detect plate regions, and save annotated frames, crops, CSV, and JSON outputs.</p>
+            </div>
+            <div id="status" class="status">Ready</div>
+        </section>
+
+        <section class="panel">
+            <form id="detect-form">
+                <div class="field">
+                    <label for="file">Upload image or video</label>
+                    <input id="file" name="file" type="file" accept="image/*,video/*">
+                </div>
+
+                <div class="controls">
+                    <label class="checkbox">
+                        <input id="use-default" name="use_default" type="checkbox" value="true" {% if default_video_exists %}checked{% endif %}>
+                        Use C:\Users\HP\Downloads\video.mp4
+                    </label>
+
+                    <label for="min-area">
+                        Minimum plate area
+                        <input id="min-area" name="min_area" type="number" min="50" value="120">
+                    </label>
+                </div>
+
+                <button type="submit" class="btn">Run Detection</button>
+            </form>
+        </section>
+
+        <section id="results" class="panel results" hidden>
+            <div class="result-header">
+                <div>
+                    <p class="eyebrow">Saved output</p>
+                    <h2 id="result-title">Detection Results</h2>
+                    <p id="output-folder" class="output-folder"></p>
+                </div>
+                <div class="report-links">
+                    <a id="csv-link" href="#" target="_blank">CSV</a>
+                    <a id="json-link" href="#" target="_blank">JSON</a>
+                </div>
+            </div>
+            <div id="cards" class="cards"></div>
+        </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
