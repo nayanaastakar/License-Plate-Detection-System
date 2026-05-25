@@ -10,33 +10,61 @@
     <main class="shell">
         <section class="hero">
             <div>
-                <p class="eyebrow">OpenCV Haar Cascade</p>
+                <p class="eyebrow">OpenCV + Canny Edge Detection</p>
                 <h1>License Plate Detection</h1>
-                <p class="summary">Upload a vehicle image or video, detect the final plate, and save the plate crop with recognized text.</p>
+                <p class="summary">Detect number plates from a live camera, image, or video and save the final plate crop with recognized text.</p>
             </div>
             <div id="status" class="status">Ready</div>
         </section>
 
         <section class="panel">
+            <div class="mode-tabs" role="tablist" aria-label="Detection mode">
+                <button id="upload-tab" class="mode-tab active" type="button" data-mode="upload">Upload</button>
+                <button id="camera-tab" class="mode-tab" type="button" data-mode="camera">Real Time Camera</button>
+            </div>
+
             <form id="detect-form">
-                <div class="field">
-                    <label for="file">Upload image or video</label>
-                    <input id="file" name="file" type="file" accept="image/*,video/*">
+                <div id="upload-panel" class="mode-panel">
+                    <div class="field">
+                        <label for="file">Upload image or video</label>
+                        <input id="file" name="file" type="file" accept="image/*,video/*">
+                    </div>
+
+                    <div class="controls">
+                        <label class="checkbox">
+                            <input id="use-default" name="use_default" type="checkbox" value="true" {% if default_video_exists %}checked{% endif %}>
+                            Use C:\Users\HP\Downloads\video.mp4
+                        </label>
+
+                        <label class="checkbox">
+                            <input id="use-default-image" name="use_default_image" type="checkbox" value="true">
+                            Use C:\Users\HP\Downloads\img car.jpg
+                        </label>
+                    </div>
+
+                    <button id="run-detection" type="submit" class="btn">Run Detection</button>
                 </div>
 
-                <div class="controls">
-                    <label class="checkbox">
-                        <input id="use-default" name="use_default" type="checkbox" value="true" {% if default_video_exists %}checked{% endif %}>
-                        Use C:\Users\HP\Downloads\video.mp4
-                    </label>
+                <div id="camera-panel" class="mode-panel camera-panel" hidden>
+                    <div class="camera-actions">
+                        <label for="camera-index">
+                            Camera index
+                            <input id="camera-index" type="number" min="0" value="0">
+                        </label>
 
-                    <label for="min-area">
-                        Minimum plate area
-                        <input id="min-area" name="min_area" type="number" min="50" value="120">
-                    </label>
+                        <label for="min-area">
+                            Minimum plate area
+                            <input id="min-area" name="min_area" type="number" min="50" value="120">
+                        </label>
+
+                        <button id="start-camera" type="button" class="btn">Start Camera</button>
+                        <button id="stop-camera" type="button" class="btn btn-secondary" disabled>Stop Camera</button>
+                    </div>
+
+                    <div class="camera-view">
+                        <img id="camera-stream" alt="Live camera stream">
+                    </div>
                 </div>
-
-                <button type="submit" class="btn">Run Detection</button>
             </form>
         </section>
 

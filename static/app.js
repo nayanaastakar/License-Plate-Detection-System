@@ -5,6 +5,18 @@ const cards = document.getElementById('cards');
 const title = document.getElementById('result-title');
 const outputFolder = document.getElementById('output-folder');
 const textLink = document.getElementById('text-link');
+const useDefault = document.getElementById('use-default');
+const useDefaultImage = document.getElementById('use-default-image');
+const modeTabs = document.querySelectorAll('.mode-tab');
+const uploadPanel = document.getElementById('upload-panel');
+const cameraPanel = document.getElementById('camera-panel');
+const cameraIndex = document.getElementById('camera-index');
+const minArea = document.getElementById('min-area');
+const startCamera = document.getElementById('start-camera');
+const stopCamera = document.getElementById('stop-camera');
+const cameraStream = document.getElementById('camera-stream');
+const runDetection = document.getElementById('run-detection');
+let cameraPoll = null;
 
 function setStatus(message, state = 'ready') {
     statusEl.textContent = message;
@@ -43,10 +55,58 @@ function renderResults(data) {
     cards.appendChild(card);
 }
 
+function switchMode(mode) {
+    modeTabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.mode === mode));
+    uploadPanel.hidden = mode !== 'upload';
+    cameraPanel.hidden = mode !== 'camera';
+    results.hidden = mode === 'camera' && !cameraStream.src;
+    if (mode === 'camera') {
+        setStatus('Camera ready');
+    } else {
+        stopCameraStream();
+        setStatus('Ready');
+    }
+}
+
+function stopCameraStream() {
+    if (cameraPoll) {
+        clearInterval(cameraPoll);
+        cameraPoll = null;
+    }
+    cameraStream.removeAttribute('src');
+    startCamera.disabled = false;
+    stopCamera.disabled = true;
+}
+
+async function refreshCameraDetection() {
+    const response = await fetch('/api/camera/latest');
+    const data = await response.json();
+    if (!data.count) {
+        return;
+    }
+
+    const detection = data.detection;
+    renderResults({
+        count: 1,
+        detections: [{
+            annotated_frame: detection.annotated_frame,
+            crop_file: detection.crop_file,
+            frame: 'live',
+            plate_text: detection.plate_text,
+            text_file: detection.text_file,
+            x: detection.x,
+            y: detection.y,
+            width: detection.width,
+            height: detection.height,
+        }],
+        output_folder: detection.output_folder,
+        text_url: detection.text_file,
+    });
+}
+
 form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const button = form.querySelector('button');
-    button.disabled = true;
+    runDetection.disabled = true;
     setStatus('Processing...', 'busy');
 
     try {
@@ -64,6 +124,40 @@ form.addEventListener('submit', async (event) => {
     } catch (error) {
         setStatus(error.message, 'error');
     } finally {
-        button.disabled = false;
+        runDetection.disabled = false;
+    }
+});
+
+modeTabs.forEach((tab) => {
+    tab.addEventListener('click', () => switchMode(tab.dataset.mode));
+});
+
+startCamera.addEventListener('click', () => {
+    const params = new URLSearchParams({
+        camera: cameraIndex.value || '0',
+        min_area: minArea.value || '120',
+        t: Date.now().toString(),
+    });
+    cameraStream.src = `/camera_feed?${params.toString()}`;
+    startCamera.disabled = true;
+    stopCamera.disabled = false;
+    setStatus('Camera running', 'busy');
+    cameraPoll = setInterval(refreshCameraDetection, 2000);
+});
+
+stopCamera.addEventListener('click', () => {
+    stopCameraStream();
+    setStatus('Camera stopped');
+});
+
+useDefault.addEventListener('change', () => {
+    if (useDefault.checked) {
+        useDefaultImage.checked = false;
+    }
+});
+
+useDefaultImage.addEventListener('change', () => {
+    if (useDefaultImage.checked) {
+        useDefault.checked = false;
     }
 });
